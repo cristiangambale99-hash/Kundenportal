@@ -49,34 +49,93 @@ alter table meldungen add column if not exists adresse text;
 alter table meldungen add column if not exists zuordnung_offen boolean not null default false;
 create index if not exists idx_meldungen_zuordnung on meldungen (zuordnung_offen) where zuordnung_offen;
 
-
 -- ============================================================
--- Kundenzugänge (persönlicher Zugangslink statt Passwort)
+-- Kundenkonten
 -- ============================================================
--- Jeder Kunde erhält bei der Auftragserteilung einen eigenen Link:
---   https://<portal>/k/<token>
--- Der Token identifiziert den Kunden; Name und Objektnummer sind danach
--- dauerhaft vorausgefüllt. Kein Passwort, nichts zu merken.
+-- Anmelde-ID ist die E-Mail-Adresse. Das Erstpasswort entsteht bei
+-- Vertragsabschluss und wird auf dem Vertrag abgedruckt; beim ersten Anmelden
+-- muss die Kundschaft ein eigenes Passwort setzen.
+--
+-- Passwoerter werden mit scrypt gehasht (in Node eingebaut). Jedes Konto hat
+-- einen eigenen Zufallssalt. Im Klartext wird nirgends etwas gespeichert.
 
 create table if not exists kundenzugaenge (
-    token text primary key,                  -- z.B. "7FQ2-XR91", per Zufall erzeugt
+    id bigint generated always as identity primary key,
+
+    -- Auftrags-/Angebotsnummer = Objektnummer
     objekt_id text not null,
     name text not null,
-    email text not null,
+    email text not null,              -- zugleich die Anmelde-ID
     adresse text,
-    aktiv boolean not null default true,     -- bei Kündigung auf false setzen
-    letzte_nutzung timestamptz,
+
+    -- Zugangsdaten
+    passwort_hash text,
+    passwort_salt text,
+    passwort_gesetzt boolean not null default false,   -- false = Erstpasswort noch nicht ersetzt
+
+    -- Anmeldeverlauf und Schutz gegen Durchprobieren
+    letzter_login timestamptz,
+    fehlversuche int not null default 0,
+    gesperrt_bis timestamptz,
+
+    -- Passwort vergessen
+    reset_hash text,                  -- SHA-256 des Links, nie der Link selbst
+    reset_ablauf timestamptz,
+
+    aktiv boolean not null default true,
     erstellt_am timestamptz not null default now()
 );
 
 create index if not exists idx_kundenzugaenge_objekt on kundenzugaenge (objekt_id);
-create index if not exists idx_kundenzugaenge_email on kundenzugaenge (lower(email));
 
--- Protokoll versendeter Zugangslinks (für "Link vergessen"-Anfragen)
-create table if not exists zugang_versand (
+-- Die E-Mail ist die Anmelde-ID und muss deshalb eindeutig sein
+create unique index if not exists idx_kundenzugaenge_login on kundenzugaenge (lower(email));
+
+-- Protokoll der Zuruecksetz-Anfragen: begrenzt Missbrauch auf
+-- hoechstens drei Anfragen pro Stunde und Adresse
+create table if not exists passwort_reset_log (
     id bigint generated always as identity primary key,
     email text not null,
     ip text,
     created_at timestamptz not null default now()
 );
-create index if not exists idx_zugang_versand_email on zugang_versand (lower(email), created_at desc);
+
+create index if not exists idx_reset_log_email on passwort_reset_log (lower(email), created_at desc);
+
+-- ============================================================
+-- Stand September 2026: Arbeitsstand, Notizen, Aduna-Abgleich
+-- (in der Live-Datenbank bereits ausgeführt)
+-- ============================================================
+alter table meldungen drop constraint if exists meldungen_status_check;
+alter table meldungen add constraint meldungen_status_check
+  check (status in ('neu','abklaerung','akzeptieren','ablehnen','erledigt'));
+alter table meldungen add column if not exists bearbeiter text;
+alter table meldungen add column if not exists aktualisiert_am timestamptz;
+
+create table if not exists meldung_notizen (
+    id bigint generated always as identity primary key,
+    meldung_id bigint references meldungen(id) on delete cascade,
+    autor text,
+    text text not null,
+    created_at timestamptz not null default now()
+);
+
+alter table kundenzugaenge add column if not exists info_gesendet_am timestamptz;  -- Zugangsdaten verschickt
+
+-- Strukturierte Felder: Aduna-tauglich statt Freitext
+alter table meldungen
+  add column if not exists termin_datum date,            -- Absage/Verschiebung: betroffener Termin, Ferien: erster Tag
+  add column if not exists termin_neu date,              -- Verschiebung: Ersatztermin (Springerteam)
+  add column if not exists zeitraum_bis date,            -- Ferien: letzter Tag (ohne Maximum)
+  add column if not exists reinigungsdatum date,         -- Reklamation/Schaden
+  add column if not exists reklamation_wunsch text,      -- nachreinigung | gespraech
+  add column if not exists vorlauf_stunden numeric,      -- Vorlauf bis 08.00 Uhr am Termin
+  add column if not exists verrechnung text,             -- kostenlos | 50 | 100 | pruefen (AGB Ziff. 4)
+  add column if not exists aduna_status text not null default 'ausstehend',  -- ausstehend | uebertragen | fehler | nicht_relevant
+  add column if not exists aduna_ref text,
+  add column if not exists aduna_uebertragen_am timestamptz,
+  add column if not exists aduna_fehler text;
+create index if not exists idx_meldungen_aduna_offen on meldungen (created_at) where aduna_status in ('ausstehend','fehler');
+
+-- Vorbereitet für spätere Ausbauschritte (noch ohne Code):
+-- dokumente (Rechnungen/Dokumente im Portal), empfehlungen (Empfehlungsprogramm)

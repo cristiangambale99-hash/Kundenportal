@@ -1,141 +1,85 @@
-# Kundenportal — testbarer Prototyp
+# Kundenportal Putzfrauenservice — Clean Service Scaramuzzo AG
 
-Formular im Browser → Vercel-Funktion → speichert in Supabase → schickt
-E-Mail via Resend → postet (wenn Zuordnung vorhanden) eine Nachricht in den
-passenden Beekeeper-Gruppenchat → Admin-Bereich zur Bearbeitung/Antwort.
+Ein Kundenportal mit Anmeldung. Kundinnen und Kunden melden Terminverschiebungen,
+Absagen, Reklamationen, Schäden und Zusatzarbeiten selbst — statt per E-Mail.
 
-## 1. Voraussetzungen einrichten
+## Anmeldung
 
-**Supabase**
-1. Projekt anlegen (oder bestehendes vom Stellenportal mitnutzen, eigenes
-   Projekt ist aber sauberer für den Anfang).
-2. SQL-Editor öffnen, Inhalt von `supabase_schema.sql` ausführen.
-3. Für den ersten Test die Tabelle `objekt_beekeeper_mapping` manuell mit
-   1-2 Testzeilen befüllen (siehe Schritt 4), damit du auch den
-   Beekeeper-Pfad testen kannst, nicht nur `no_mapping`.
+- **Anmelde-ID** ist die E-Mail-Adresse
+- **Erstpasswort** entsteht bei Vertragsabschluss und steht auf dem Vertrag
+- Beim ersten Anmelden muss ein **eigenes Passwort** gesetzt werden
+- **Passwort vergessen** läuft selbstständig per E-Mail-Link (1 Stunde gültig)
+- Nach 5 Fehlversuchen ist ein Konto 15 Minuten gesperrt
+- Angemeldet bleibt man 30 Tage
 
-**Resend**
-1. Konto/Domain wie beim Stellenportal (kundenportal@clean-service.ch als
-   Absender verifizieren, oder eine andere verifizierte Absenderadresse in
-   `lib/email.js` eintragen).
-2. API-Key erstellen.
+Passwörter werden mit scrypt gehasht (in Node eingebaut). Jedes Konto hat einen
+eigenen Zufallssalt; im Klartext wird nichts gespeichert.
 
-**Beekeeper**
-1. Bot-Konto mit Admin-Rechten im Beekeeper Dashboard erstellen, Token holen.
-2. Tenant-URL notieren (die Adresse, unter der ihr Beekeeper im Browser
-   erreicht).
+## Geschäftsregeln (Stand 23.09.2026, alle in `api/_regeln.js`)
 
-**Admin-Passwort**
-Ein selbstgewähltes, sicheres Passwort für den Admin-Bereich (siehe Schritt 6).
+- **Absage:** automatisch bestätigt. Frist gemäss AGB Ziff. 4: ab 24 Std. vorher kostenlos, darunter 50 %, unter 4 Std. 100 %. Ohne genaue Einsatzzeit prüft das Portal beide Ränder des Einsatzfensters (08–17 Uhr). Ist das Ergebnis nicht eindeutig, wird die Absage mit „prüfen“ markiert.
+- **Ferien:** Absage als Zeitraum von–bis, ohne Maximum. Zählt nicht in die Ampel.
+- **Verschiebung:** automatisch bestätigt, Ersatztermin durch das Springerteam (frühestens morgen). Keine Verschiebung mit der festen Raumpflegerin.
+- **Reklamation:** nur innert 24 Std. (Reinigung von heute oder gestern). Die Kundschaft wählt zwischen Nachreinigung durch das Springerteam (interne Notiz: Zeit wird der fixen Raumpflegerin abgezogen) und Gespräch mit dem Abteilungsleiter.
+- **Zusatzarbeiten:** Mail „Offerte vorbereiten“ an spezialreinigung@. Erscheint nicht im PFS-Posteingang.
+- **Bestätigung:** Jede Meldung löst sofort eine Bestätigungsmail an die Kundschaft aus.
+- **Beekeeper:** Nur Absagen und Verschiebungen gehen in den Chat der Raumpflegerin.
+- **Admin:** Ein gemeinsames Passwort, beim Anmelden wählt man seinen Namen. Bearbeiter und Notiz-Autor werden automatisch eingetragen.
 
-## 2. Projekt deployen
+## Rollout Bestandskunden
 
-```bash
-npm install
-npx vercel          # einmalig einloggen/verknüpfen
-npx vercel env add SUPABASE_URL
-npx vercel env add SUPABASE_SERVICE_KEY
-npx vercel env add RESEND_API_KEY
-npx vercel env add BEEKEEPER_TENANT_URL
-npx vercel env add BEEKEEPER_API_TOKEN
-npx vercel env add ADMIN_PASSWORD
-npx vercel env add TURNSTILE_SECRET_KEY
-npx vercel --prod
+Adminbereich → Kundenkonten → „Rollout Bestandskunden“:
+1. CSV importieren (Objektnummer; Name; E-Mail; Adresse). Bestehende Konten werden nicht überschrieben.
+2. „Nächste Welle senden“: pro Klick bis 100 Kunden. Jede Mail enthält ein frisch erzeugtes Erstpasswort. Wer schon eine Mail erhalten hat, bekommt keine zweite.
+
+## Aduna-Abgleich
+
+Aduna läuft On-Premise. `aduna-sync/aduna_sync.py` läuft im Büro-Netz (Windows-Aufgabenplanung, alle 5 Min.), holt über `/api/aduna` alle Meldungen mit `aduna_status = ausstehend`, schreibt sie in Aduna und meldet das Ergebnis zurück. In der Firewall muss dafür nichts geöffnet werden. Offen ist nur noch das Feld-Mapping für tpeDisposition/tTagesjournal (im Skript mit „ADUNA-MAPPING“ markiert), das mit dem Aduna-Support festgelegt wird.
+
+## Dateien
+
+```
+index.html              Kundenansicht: Anmeldung + Meldeformulare
+admin.html              Adminbereich für das PFS-Team
+api/konto.js            Anmelden, Passwort setzen, Passwort vergessen
+api/aduna.js            Abgleich mit Aduna (Pull durch aduna-sync)
+api/_regeln.js          Geschäftsregeln (Fristen, Verrechnung, Prüfungen)
+api/_meldung-pdf.js     PDF für Reklamation/Schaden auf Briefpapier
+aduna-sync/             Skript für den Aduna-Server im Büro
+api/zugang.js           Konto anlegen (wird von der Angebots-App aufgerufen)
+api/melde.js            Meldungen entgegennehmen (Supabase + E-Mail + Beekeeper)
+api/admin.js            Adminfunktionen
+supabase_schema.sql     Datenbankschema
 ```
 
-(Alternativ: Projekt bei vercel.com importieren und die Umgebungsvariablen
-dort im Dashboard unter Settings > Environment Variables eintragen.)
+## Umgebungsvariablen bei Vercel
 
-## 3. Testen
+```
+SUPABASE_URL
+SUPABASE_SERVICE_KEY
+RESEND_API_KEY
+SESSION_SECRET          langer Zufallswert, signiert die Anmelde-Cookies
+PORTAL_URL              https://portal.clean-service.ch
+ADMIN_PASSWORD
+TURNSTILE_SECRET_KEY
+BEEKEEPER_TENANT_URL
+BEEKEEPER_API_TOKEN
+ANGEBOT_API_KEY         gemeinsamer Schlüssel mit der Angebots-App
+ADUNA_SYNC_KEY          gemeinsamer Schlüssel mit aduna-sync
+ADMIN_NAMEN             optional, kommagetrennt (Standard: Cristian Gambale, Fiorella Scalone, Tayron Moreno, Lina)
+```
 
-1. Deployte URL öffnen, "Absage" wählen.
-2. Name, Objekt-/Kundennummer, E-Mail und Datum ausfüllen, absenden.
-3. Erwartetes Verhalten:
-   - Browser zeigt die Bestätigungsseite mit "was passiert jetzt"-Hinweis
-   - In der Browser-Konsole (F12) siehst du die Rückmeldung, z.B.
-     `{ id: 1, team_mail: "sent", kunden_mail: "sent", beekeeper: "no_mapping" }`
-   - In Supabase, Tabelle `meldungen`, erscheint ein neuer Eintrag
-   - Bei putzfrauenservice@clean-service.ch UND bei der eingegebenen
-     Kunden-Mailadresse kommt je eine E-Mail an (bei Absage)
-4. Für den Beekeeper-Test: in `objekt_beekeeper_mapping` eine Zeile mit der
-   von dir eingegebenen Objekt-/Kundennummer und einer echten
-   `beekeeper_chat_id` (Gruppenchat-ID) anlegen, Status `matched` setzen,
-   dann nochmal absenden — jetzt sollte `beekeeper: "sent"` erscheinen und
-   die Nachricht im entsprechenden Gruppenchat auftauchen.
+## Einrichtung
 
-## 4. Woher bekomme ich eine echte Beekeeper-Gruppenchat-ID zum Testen?
+1. `supabase_schema.sql` in Supabase ausführen
+2. Umgebungsvariablen bei Vercel setzen
+3. Domain `portal.clean-service.ch` verbinden
+4. In der Angebots-App `PORTAL_URL` und `PORTAL_API_KEY` setzen
+   (`PORTAL_API_KEY` = derselbe Wert wie `ANGEBOT_API_KEY` hier)
 
-Am einfachsten: `python match_objekte_zu_beekeeper.py Objekt_Liste.xlsx`
-aus dem separaten `beekeeper-integration`-Paket einmal laufen lassen (siehe
-vorheriger Austausch) — das befüllt `objekt_beekeeper_mapping` automatisch
-für alle Objekte aus eurer Aduna-Excel-Liste.
+## Offen
 
-## 5. Sicherheit & Missbrauchsschutz
-
-**Captcha (Cloudflare Turnstile)**
-1. Auf https://dash.cloudflare.com/?to=/:account/turnstile ein neues Widget anlegen,
-   Domain = eure Vercel-URL (bzw. später eure eigene Domain)
-2. Den **Site Key** in `public/index.html` eintragen, ersetze
-   `TURNSTILE_SITE_KEY_HIER_EINTRAGEN` mit dem echten Wert
-3. Den **Secret Key** als `TURNSTILE_SECRET_KEY` bei Vercel eintragen
-4. Ohne diesen Schritt läuft das Portal trotzdem (Captcha wird dann übersprungen,
-   mit Warnung im Server-Log) — für den produktiven Einsatz aber nachholen
-
-**Objektnummer-Validierung**
-Läuft automatisch über die Tabelle `objekt_beekeeper_mapping` — die wird ja
-sowieso wöchentlich per `match_objekte_zu_beekeeper.py` aus der Aduna-Excel-Liste
-befüllt. Eine Objekt-/Kundennummer, die dort nicht vorkommt, wird jetzt beim
-Absenden abgelehnt. Wichtig: Ohne diesen wöchentlichen Import ist die Tabelle
-leer, und **jede** Nummer würde abgelehnt — also vor dem produktiven Einsatz
-einmal laufen lassen.
-
-**Rate-Limiting**
-Läuft automatisch mit, max. 5 Meldungen pro Stunde pro IP-Adresse. Kein
-zusätzliches Setup nötig, nutzt die bestehende `meldungen`-Tabelle.
-
-## 6. Admin-Bereich, Kundenbestätigung & Analytics
-
-**Admin-Login einrichten**
-- In Vercel die Env-Variable `ADMIN_PASSWORD` setzen (ein selbstgewähltes,
-  sicheres Passwort — das ist aktuell EIN gemeinsames Passwort fürs Team, kein
-  Login pro Person)
-- Danach unter `/admin.html` erreichbar (auch verlinkt ganz unten im Footer
-  des Kundenportals, als kleiner, kaum sichtbarer Link)
-
-**Was der Admin-Bereich zeigt**
-- Alle Meldungen, filterbar nach Kategorie/Status
-- Bei Terminverschiebung: Akzeptieren/Ablehnen-Buttons, die automatisch eine
-  passende E-Mail an den Kunden schicken
-- Bei Reklamation/Schadenmeldung/Zusatzauftrag: Freitextfeld für eine kurze
-  Antwort, die direkt als Mail rausgeht — kein separates Mailprogramm nötig
-- Statistik-Kacheln: Meldungen (30 Tage), offen, pro Kategorie, fehlgeschlagene
-  Versuche (Captcha/Rate-Limit/unbekannte Objektnummer)
-
-**Kundenbestätigung**
-- Absagen: automatische Bestätigungsmail direkt beim Absenden
-- Alle anderen Kategorien: Bestätigung/Antwort kommt aus dem Admin-Bereich,
-  sobald jemand vom Team reagiert
-
-## 7. Was hier bewusst vereinfacht ist
-
-- **Admin-Login** ist ein einzelnes gemeinsames Passwort, kein Login pro
-  Mitarbeiter:in mit eigenem Konto
-- **Analytics** sind einfache Zähler/Tabellen, keine grafischen Charts oder
-  Trend-Verläufe
-- **Accessibility**: Skip-Link, Tastaturfokus, Label-Verknüpfung und
-  Screenreader-Sprachumschaltung sind eingebaut; eine vollständige Prüfung
-  mit echten Screenreadern/Kontrast-Tools habe ich nicht durchgeführt
-
-## 8. Was hier bewusst noch NICHT drin ist
-
-- Aduna-Anbindung (wartet auf Thomas' Rückmeldung zur Feldstruktur)
-- Foto-Upload-Speicherung für Reklamation/Schadenmeldung (Feld existiert im
-  Formular, wird aber im Request aktuell nicht mitgeschickt — das braucht
-  noch einen Upload-Endpoint mit Supabase Storage)
-
-## Offener Punkt zur Beekeeper-API
-
-Die Endpunkt-Pfade in `lib/beekeeper.js` (`/api/2/groups`,
-`/api/2/chats/{id}/messages`) stammen aus öffentlicher Doku und
-Community-Beispielen, nicht aus eurem eigenen Entwicklerportal. Beim Live-Test
-kam ein 404 zurück — wartet aktuell auf Antwort vom Beekeeper-Support.
+- Aduna-Feld-Mapping (Support-Termin Version 26.1)
+- Domain portal.clean-service.ch (IT)
+- Beekeeper-Bot in die Kunden-Gruppenchats aufnehmen (Lernende)
+- AGB: Portal als offiziellen Kanal aufnehmen
